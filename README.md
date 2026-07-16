@@ -1,19 +1,37 @@
 # SysInfo 📊
 
-A real-time hardware telemetry and package update status terminal user interface (TUI) dashboard written in Rust.
+A real-time hardware telemetry and package update status TUI dashboard in Rust.
+Everything is auto-detected at runtime — no hardware assumptions baked in.
 
 ## Tech Stack
-- **Language:** Rust
-- **Libraries:**
-  - `ratatui` (TUI framework)
-  - `crossterm` (Terminal drawing and raw mode support)
-  - `serde`/`serde_json` (Data handling)
+- **Language:** Rust (stdlib + `ratatui` + `crossterm` only)
+- **Data sources:** `/proc` and `/sys` (hwmon, DRM, block) read directly;
+  `lspci`, `iw`, `ip`, and `lsblk` where sysfs has no equivalent.
 
-## Features
-- **Categorized Tabs:**
-  1. *System & Load:* Overall loads, uptime, host details.
-  2. *CPU Core Loads:* Granular usage percentages for individual CPU cores.
-  3. *Memory, ZRAM & Disk:* Memory allocation and disk usage telemetry.
-  4. *GPUs:* Intel Arc and AMD GPU sensor stats (temps, fans, clock speeds).
-  5. *Net & Sensors:* Up/down bandwidth speeds, hardware thermal sensors, and Wi-Fi capability.
-- **Background System Updates:** Spawned check thread notifying pending updates for Pacman, Paru, and global NPM modules.
+## Tabs
+1. **System & Load** — host info, load average, CPU model/frequency/governor/temps,
+   pending package updates (pacman, AUR helper, flatpak, npm — auto-detected).
+2. **CPU Cores** — per-core utilization bars from `/proc/stat` deltas.
+3. **Memory & Disk** — RAM usage, every ZRAM device, block device tree.
+4. **GPUs** — every card under `/sys/class/drm`, found by driver symlink
+   (amdgpu, xe, i915, nouveau, ...), named via `lspci`, with its own hwmon
+   sensors (temps, fans, clocks, voltages, power) and VRAM usage where exposed.
+5. **Net & Sensors** — per-interface bandwidth and IPv4, Wi-Fi hardware
+   capabilities, and every remaining hwmon chip rendered generically.
+
+## Design
+- **No hardcoding:** sensors come from hwmon sysfs enumeration (not parsed
+  `sensors` output), GPUs from DRM driver symlinks (not fixed card numbers),
+  the AUR helper is detected (paru/yay/pikaur).
+- **Lightweight:** static facts (hostname, kernel, CPU model, GPU names, Wi-Fi
+  caps) are collected once at startup. The render loop only re-reads cheap
+  /proc//sys files; hwmon is cached for 2s, `lsblk` for 5s, IPs for 10s.
+  Steady state spawns roughly one process every few seconds, not several per frame.
+- **Safe update checks:** read-only commands in a background thread, never
+  elevated; npm is only counted when its global prefix is user-owned,
+  otherwise it is reported as pacman-managed.
+- **Robust terminal handling:** raw mode and the alternate screen are restored
+  via an RAII guard and a panic hook, so a crash can't wedge the shell.
+
+## Keys
+`1-5` / `h` `l` — switch tabs · `r` — refresh update counts · `q` / `Esc` / `Ctrl-C` — quit
