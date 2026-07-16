@@ -10,7 +10,8 @@ pub const TABS: &[&str] = &[
     "[2] CPU Cores",
     "[3] Memory & Disk",
     "[4] GPUs",
-    "[5] Net & Sensors",
+    "[5] Network",
+    "[6] All Sensors",
 ];
 
 fn bar(percentage: f64, width: usize) -> String {
@@ -86,7 +87,7 @@ pub fn system_tab(statics: &StaticInfo, sampler: &mut Sampler, updates: &Arc<Mut
          Temps:            {}\n\n\
          --- Available Updates [r to refresh] ---\n \
          {}\n\n\
-         Tabs: [1-5] or [h/l]  |  Quit: [q]/[Esc]",
+         Tabs: [1-6] or [h/l]  |  Quit: [q]/[Esc]",
         statics.os_name,
         statics.hostname,
         statics.kernel,
@@ -104,10 +105,32 @@ pub fn system_tab(statics: &StaticInfo, sampler: &mut Sampler, updates: &Arc<Mut
     )
 }
 
-pub fn cores_tab(sampler: &Sampler) -> String {
+pub fn cores_tab(sampler: &mut Sampler) -> String {
     let mut out = String::from("--- Per-Core CPU Utilization ---\n");
     for (idx, &load) in sampler.core_loads.iter().enumerate() {
         out.push_str(&format!("Core {idx:2}: {}\n", bar(load, 30)));
+    }
+
+    if let Some(chip) = sampler.cpu_chip() {
+        // Intel coretemp exposes one sensor per physical core ("Core 0", ...);
+        // AMD k10temp only has package/CCD sensors, so show what exists
+        let per_core: Vec<&(String, f64)> =
+            chip.temps.iter().filter(|(l, _)| l.starts_with("Core ")).collect();
+        if !per_core.is_empty() {
+            out.push_str("\n--- Per-Core Temperatures ---\n");
+            for (label, v) in per_core {
+                out.push_str(&format!("{label:<8} {v:.1}°C\n"));
+            }
+        } else if !chip.temps.is_empty() {
+            out.push_str(&format!("\n--- CPU Temperatures [{}] ---\n", chip.name));
+            for (label, v) in &chip.temps {
+                out.push_str(&format!("{label:<8} {v:.1}°C\n"));
+            }
+            out.push_str(&format!(
+                "\n({} does not expose per-core sensors; these cover the package/CCDs)\n",
+                chip.name
+            ));
+        }
     }
     out
 }
@@ -182,22 +205,49 @@ pub fn net_tab(statics: &StaticInfo, sampler: &mut Sampler) -> String {
          Bands:           {}\n",
         statics.wifi_standard, statics.wifi_bands
     ));
+    out
+}
 
-    // every hwmon chip not already shown on the CPU or GPU tabs
-    let gpu_ids: Vec<String> = statics.gpus.iter().filter_map(|g| g.hwmon_id.clone()).collect();
-    let others: Vec<HwmonChip> = sampler
-        .hwmon()
+pub fn sensors_tab(statics: &StaticInfo, sampler: &mut Sampler) -> String {
+    let gpu_names: std::collections::HashMap<&str, &str> = statics
+        .gpus
         .iter()
-        .filter(|c| !CPU_CHIPS.contains(&c.name.as_str()) && !gpu_ids.contains(&c.id))
-        .cloned()
+        .filter_map(|g| g.hwmon_id.as_deref().map(|id| (id, g.name.as_str())))
         .collect();
-    out.push_str("\n--- Other Sensors ---\n");
-    if others.is_empty() {
-        out.push_str("  none found\n");
+    let chips: Vec<HwmonChip> = sampler.hwmon().to_vec();
+
+    let mut out = String::from("--- All Hardware Sensors (hwmon) ---\n\n");
+    if chips.is_empty() {
+        return out + "no hwmon chips found";
     }
-    for chip in &others {
-        out.push_str(&format!("  [{}]\n", chip.name));
-        out.push_str(&chip_lines(chip, "    "));
+    let mut fan_count = 0usize;
+    for chip in &chips {
+        fan_count += chip.fans.len();
+        let context = if CPU_CHIPS.contains(&chip.name.as_str()) {
+            " - CPU"
+        } else if let Some(gpu) = gpu_names.get(chip.id.as_str()) {
+            gpu
+        } else {
+            ""
+        };
+        let context = if context.is_empty() || context == " - CPU" {
+            context.to_string()
+        } else {
+            format!(" - {context}")
+        };
+        out.push_str(&format!("[{}]{} ({})\n", chip.name, context, chip.id));
+        out.push_str(&chip_lines(chip, "  "));
+        out.push('\n');
+    }
+
+    if fan_count == 0 {
+        out.push_str(
+            "No fan or pump RPM sensors found.\n\
+             Case fans, CPU fans and pumps are usually read by the motherboard's\n\
+             Super I/O chip, whose kernel driver may not be loaded. Try:\n\
+             sudo modprobe nct6775   (Nuvoton, most ASRock/ASUS/MSI boards)\n\
+             or run sensors-detect from lm_sensors to identify the right driver.\n",
+        );
     }
     out
 }

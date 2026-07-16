@@ -10,14 +10,16 @@ Everything is auto-detected at runtime — no hardware assumptions baked in.
 
 ## Tabs
 1. **System & Load** — host info, load average, CPU model/frequency/governor/temps,
-   pending package updates (pacman, AUR helper, flatpak, npm — auto-detected).
-2. **CPU Cores** — per-core utilization bars from `/proc/stat` deltas.
+   pending package updates (pacman, AUR, flatpak, rustup, cargo, pipx, pip, npm, gem, go, composer, deno — all auto-detected, read-only; updating is sysup's job).
+2. **CPU Cores** — per-core utilization bars, plus per-core temperatures where the CPU exposes them (Intel coretemp); AMD k10temp shows package/CCD temps.
 3. **Memory & Disk** — RAM usage, every ZRAM device, block device tree.
 4. **GPUs** — every card under `/sys/class/drm`, found by driver symlink
    (amdgpu, xe, i915, nouveau, ...), named via `lspci`, with its own hwmon
    sensors (temps, fans, clocks, voltages, power) and VRAM usage where exposed.
-5. **Net & Sensors** — per-interface bandwidth and IPv4, Wi-Fi hardware
-   capabilities, and every remaining hwmon chip rendered generically.
+5. **Network** — per-interface bandwidth, IPv4, Wi-Fi hardware capabilities.
+6. **All Sensors** — every hwmon chip in the system (CPU, GPUs, NVMe, RAM SPD,
+   NICs, Super I/O, ...) with temps, fan/pump RPMs, clocks, voltages and power;
+   hints at the missing Super I/O driver when no fan sensors are exposed.
 
 ## Design
 - **No hardcoding:** sensors come from hwmon sysfs enumeration (not parsed
@@ -34,4 +36,4 @@ Everything is auto-detected at runtime — no hardware assumptions baked in.
   via an RAII guard and a panic hook, so a crash can't wedge the shell.
 
 ## Keys
-`1-5` / `h` `l` — switch tabs · `r` — refresh update counts · `q` / `Esc` / `Ctrl-C` — quit
+`1-6` / `h` `l` — switch tabs · `r` — refresh update counts · `q` / `Esc` / `Ctrl-C` — quit

@@ -629,13 +629,37 @@ pub fn amd_vram(dev_path: &Path) -> Option<(u64, u64)> {
 }
 
 // ---------------------------------------------------------------------------
-// background package update check (read-only commands, never elevates)
+// background package update check (read-only commands, never elevates;
+// updating is sysup's job, this only reports)
 
 #[derive(Default)]
 pub struct UpdatesInfo {
     pub lines: Vec<String>,
     pub checking: bool,
     pub last_checked: Option<Instant>,
+}
+
+fn home() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+}
+
+fn count_lines(out: String) -> usize {
+    out.lines().filter(|l| !l.trim().is_empty()).count()
+}
+
+/// Counts entries in JSON output without a JSON dependency; good enough for
+/// "how many packages" over pip/composer machine output.
+fn count_json_names(out: &str) -> usize {
+    out.matches("\"name\":").count()
+}
+
+fn dir_entry_count(dir: &Path) -> usize {
+    fs::read_dir(dir).map(|d| d.flatten().count()).unwrap_or(0)
+}
+
+fn pip_externally_managed() -> bool {
+    let probe = "import sysconfig,os;print(os.path.exists(os.path.join(sysconfig.get_path('stdlib'),'EXTERNALLY-MANAGED')))";
+    run_cmd(&["python3", "-c", probe]).trim() == "True"
 }
 
 pub fn check_updates(state: &Arc<Mutex<UpdatesInfo>>) {
@@ -646,32 +670,100 @@ pub fn check_updates(state: &Arc<Mutex<UpdatesInfo>>) {
         lock.checking = true;
     }
 
-    let count = |out: String| out.lines().filter(|l| !l.trim().is_empty()).count();
     let mut lines = Vec::new();
+    let mut push = |name: &str, value: String| lines.push(format!("{:<18} {}", format!("{name}:"), value));
+    let updates = |n: usize| if n == 0 { "up to date".to_string() } else { format!("{n} updates") };
 
     if which("checkupdates") {
-        lines.push(format!("Pacman (Official): {} updates", count(run_cmd(&["checkupdates"]))));
+        push("Pacman (Official)", updates(count_lines(run_cmd(&["checkupdates"]))));
     }
     if let Some(helper) = ["paru", "yay", "pikaur"].iter().find(|h| which(h)) {
-        lines.push(format!("AUR ({helper}):        {} updates", count(run_cmd(&[helper, "-Qua"]))));
+        push(&format!("AUR ({helper})"), updates(count_lines(run_cmd(&[helper, "-Qua"]))));
+    } else if which("pamac") {
+        push("AUR (pamac)", updates(count_lines(run_cmd(&["pamac", "checkupdates", "-a", "--quiet"]))));
+    } else if let Some(helper) = ["trizen", "aura"].iter().find(|h| which(h)) {
+        let foreign = count_lines(run_cmd(&["pacman", "-Qm"]));
+        push(&format!("AUR ({helper})"), format!("{foreign} foreign pkgs (no read-only check)"));
     }
     if which("flatpak") {
-        lines.push(format!(
-            "Flatpak:           {} updates",
-            count(run_cmd(&["flatpak", "remote-ls", "--updates"]))
-        ));
+        push("Flatpak", updates(count_lines(run_cmd(&["flatpak", "remote-ls", "--updates"]))));
+    }
+    if which("rustup") && home().join(".rustup").is_dir() {
+        let n = run_cmd(&["rustup", "check"]).lines().filter(|l| l.contains("Update available")).count();
+        push("Rust toolchains", updates(n));
+    }
+    let cargo_bin = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".cargo"))
+        .join("bin");
+    if which("cargo") && dir_entry_count(&cargo_bin) > 0 {
+        if which("cargo-install-update") {
+            let n = run_cmd(&["cargo", "install-update", "--list"])
+                .lines()
+                .filter(|l| l.split_whitespace().last() == Some("Yes"))
+                .count();
+            push("Cargo tools", updates(n));
+        } else {
+            push("Cargo tools", "install cargo-update to check".to_string());
+        }
+    }
+    if which("pipx") {
+        let n = count_lines(run_cmd(&["pipx", "list", "--short"]));
+        if n > 0 {
+            push("Pipx apps", format!("{n} installed (latest on upgrade)"));
+        }
+    }
+    if which("python3") && !run_cmd(&["python3", "-m", "pip", "--version"]).is_empty() {
+        if pip_externally_managed() {
+            push("Pip", "externally managed (via pacman)".to_string());
+        } else {
+            let n = count_json_names(&run_cmd(&["python3", "-m", "pip", "list", "--outdated", "--format=json"]));
+            push("Pip", format!("{} (update per package)", updates(n)));
+        }
     }
     if which("npm") {
         let root = run_cmd(&["npm", "root", "-g"]).trim().to_string();
         if !root.is_empty() && user_writable(Path::new(&root)) {
-            lines.push(format!(
-                "NPM (Global):      {} updates",
-                count(run_cmd(&["npm", "outdated", "-g", "--parseable"]))
-            ));
+            push("NPM (global)", updates(count_lines(run_cmd(&["npm", "outdated", "-g", "--parseable"]))));
         } else {
-            lines.push("NPM (Global):      managed by pacman".to_string());
+            push("NPM (global)", "managed by pacman".to_string());
         }
     }
+    if which("gem") && which("ruby") {
+        let user_gems = PathBuf::from(run_cmd(&["ruby", "-e", "print Gem.user_dir"]).trim()).join("gems");
+        if dir_entry_count(&user_gems) > 0 {
+            push("Gem (user)", updates(count_lines(run_cmd(&["gem", "outdated"]))));
+        }
+    }
+    if which("go") {
+        let gobin = std::env::var_os("GOBIN")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                let gopath = run_cmd(&["go", "env", "GOPATH"]).trim().to_string();
+                if gopath.is_empty() { home().join("go") } else { PathBuf::from(gopath) }.join("bin")
+            });
+        let n = dir_entry_count(&gobin);
+        if n > 0 {
+            push("Go tools", format!("{n} installed (latest on install)"));
+        }
+    }
+    if which("composer") {
+        let cfg = std::env::var_os("COMPOSER_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home().join(".config/composer"));
+        if cfg.join("composer.json").is_file() {
+            let n = count_json_names(&run_cmd(&["composer", "global", "outdated", "--direct", "--format=json"]));
+            push("Composer (global)", updates(n));
+        }
+    }
+    let deno_bin = std::env::var_os("DENO_INSTALL_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".deno"))
+        .join("bin");
+    if dir_entry_count(&deno_bin) > 0 {
+        push("Deno scripts", format!("{} installed (reinstall to update)", dir_entry_count(&deno_bin)));
+    }
+
     if lines.is_empty() {
         lines.push("No supported package managers found".to_string());
     }

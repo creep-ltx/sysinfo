@@ -70,10 +70,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sampler.sample();
         let content = match active_tab {
             0 => ui::system_tab(&statics, &mut sampler, &updates),
-            1 => ui::cores_tab(&sampler),
+            1 => ui::cores_tab(&mut sampler),
             2 => ui::memory_tab(&mut sampler),
             3 => ui::gpu_tab(&statics, &mut sampler),
             4 => ui::net_tab(&statics, &mut sampler),
+            5 => ui::sensors_tab(&statics, &mut sampler),
             _ => String::new(),
         };
 
@@ -116,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 KeyCode::Right | KeyCode::Char('l') => {
                     active_tab = (active_tab + 1).min(ui::TABS.len() - 1)
                 }
-                KeyCode::Char(c @ '1'..='5') => active_tab = c as usize - '1' as usize,
+                KeyCode::Char(c @ '1'..='6') => active_tab = c as usize - '1' as usize,
                 _ => {}
             }
         }
