@@ -15,7 +15,8 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Paragraph, Tabs},
+    text::{Span, Text},
+    widgets::{Block, BorderType, Borders, Paragraph, Tabs},
     Terminal,
 };
 
@@ -75,25 +76,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             3 => ui::gpu_tab(&statics, &mut sampler),
             4 => ui::net_tab(&statics, &mut sampler),
             5 => ui::sensors_tab(&statics, &mut sampler),
-            _ => String::new(),
+            _ => Text::default(),
         };
 
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .margin(1)
                 .constraints([Constraint::Length(3), Constraint::Min(0)])
                 .split(f.size());
 
-            let tabs_widget = Tabs::new(ui::TABS.to_vec())
-                .block(Block::default().borders(Borders::ALL).title("Hardware Dashboard"))
-                .select(active_tab)
-                .style(Style::default().fg(Color::Cyan))
-                .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+            let border = Style::default().fg(Color::Rgb(70, 85, 110));
+            let title = Style::default().fg(ui::ACCENT).add_modifier(Modifier::BOLD);
 
-            let content_widget = Paragraph::new(content.as_str())
-                .block(Block::default().borders(Borders::ALL).title("Details"))
-                .style(Style::default().fg(Color::White));
+            let tabs_widget = Tabs::new(ui::TABS.to_vec())
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(border)
+                        .title(Span::styled(" SysInfo ", title)),
+                )
+                .select(active_tab)
+                .style(Style::default().fg(Color::Rgb(120, 125, 140)))
+                .highlight_style(
+                    Style::default().fg(Color::Rgb(247, 199, 103)).add_modifier(Modifier::BOLD),
+                );
+
+            let content_widget = Paragraph::new(content).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(border)
+                    .title(Span::styled(format!(" {} ", ui::TABS[active_tab]), title)),
+            );
 
             f.render_widget(tabs_widget, chunks[0]);
             f.render_widget(content_widget, chunks[1]);

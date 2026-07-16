@@ -327,6 +327,34 @@ struct NetBytes {
     tx: u64,
 }
 
+/// CPU package power via the RAPL energy counter (µJ); root-only on most
+/// kernels unless the binary has cap_dac_read_search (like distro btop builds).
+struct RaplState {
+    path: PathBuf,
+    max_range: u64,
+    prev_uj: u64,
+    prev_at: Instant,
+}
+
+fn detect_rapl() -> Option<PathBuf> {
+    for entry in fs::read_dir("/sys/class/powercap").ok()?.flatten() {
+        let dir = entry.path();
+        if read_trim(dir.join("name")).starts_with("package") {
+            return Some(dir);
+        }
+    }
+    None
+}
+
+pub const HISTORY: usize = 240;
+
+fn push_history(hist: &mut Vec<u64>, value: u64) {
+    hist.push(value);
+    if hist.len() > HISTORY {
+        hist.remove(0);
+    }
+}
+
 pub struct Sampler {
     prev_global: CpuTimes,
     prev_cores: Vec<CpuTimes>,
@@ -335,6 +363,12 @@ pub struct Sampler {
     pub cpu_load: f64,
     pub core_loads: Vec<f64>,
     pub net_speeds: HashMap<String, (f64, f64)>, // KB/s (down, up)
+    pub cpu_history: Vec<u64>,                   // % load per sample
+    pub rx_history: Vec<u64>,                    // total KB/s per sample
+    pub tx_history: Vec<u64>,
+    pub cpu_power: Option<f64>, // package watts via RAPL
+    pub rapl_denied: bool,      // RAPL exists but energy_uj is root-only
+    rapl: Option<RaplState>,
     hwmon_at: Option<Instant>,
     hwmon: Vec<HwmonChip>,
     disks_at: Option<Instant>,
@@ -353,6 +387,22 @@ fn expired(at: Option<Instant>, ttl: Duration) -> bool {
 
 impl Sampler {
     pub fn new() -> Self {
+        let mut rapl_denied = false;
+        let rapl = detect_rapl().and_then(|dir| {
+            let path = dir.join("energy_uj");
+            match fs::read_to_string(&path) {
+                Ok(v) => Some(RaplState {
+                    max_range: read_u64(dir.join("max_energy_range_uj")),
+                    prev_uj: v.trim().parse().unwrap_or(0),
+                    prev_at: Instant::now(),
+                    path,
+                }),
+                Err(_) => {
+                    rapl_denied = true;
+                    None
+                }
+            }
+        });
         let mut s = Self {
             prev_global: CpuTimes::default(),
             prev_cores: Vec::new(),
@@ -361,6 +411,12 @@ impl Sampler {
             cpu_load: 0.0,
             core_loads: Vec::new(),
             net_speeds: HashMap::new(),
+            cpu_history: Vec::new(),
+            rx_history: Vec::new(),
+            tx_history: Vec::new(),
+            cpu_power: None,
+            rapl_denied,
+            rapl,
             hwmon_at: None,
             hwmon: Vec::new(),
             disks_at: None,
@@ -403,6 +459,32 @@ impl Sampler {
             self.net_speeds.insert(iface.clone(), speed);
         }
         self.prev_net = net;
+
+        push_history(&mut self.cpu_history, self.cpu_load.round() as u64);
+        let (rx_total, tx_total) = self
+            .net_speeds
+            .iter()
+            .filter(|(i, _)| i.as_str() != "lo")
+            .fold((0.0, 0.0), |(r, t), (_, &(rx, tx))| (r + rx, t + tx));
+        push_history(&mut self.rx_history, rx_total.round() as u64);
+        push_history(&mut self.tx_history, tx_total.round() as u64);
+
+        if let Some(raw) = self.rapl.as_ref().and_then(|r| fs::read_to_string(&r.path).ok()) {
+            let rapl = self.rapl.as_mut().unwrap();
+            let cur: u64 = raw.trim().parse().unwrap_or(rapl.prev_uj);
+            let dt = now.duration_since(rapl.prev_at).as_secs_f64();
+            if dt > 0.2 {
+                let delta = if cur >= rapl.prev_uj {
+                    cur - rapl.prev_uj
+                } else {
+                    // counter wrapped at max_energy_range_uj
+                    rapl.max_range.saturating_sub(rapl.prev_uj).saturating_add(cur)
+                };
+                self.cpu_power = Some(delta as f64 / 1_000_000.0 / dt);
+                rapl.prev_uj = cur;
+                rapl.prev_at = now;
+            }
+        }
         self.last_sample = now;
     }
 

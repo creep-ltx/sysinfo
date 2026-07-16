@@ -10,7 +10,9 @@ Everything is auto-detected at runtime — no hardware assumptions baked in.
 
 ## Tabs
 1. **System & Load** — host info, load average, CPU model/frequency/governor/temps,
-   pending package updates (pacman, AUR, flatpak, rustup, cargo, pipx, pip, npm, gem, go, composer, deno — all auto-detected, read-only; updating is sysup's job).
+   package power draw (RAPL), a 2-minute load history graph, and pending package
+   updates (pacman, AUR, flatpak, rustup, cargo, pipx, pip, npm, gem, go,
+   composer, deno — all auto-detected, read-only; updating is sysup's job).
 2. **CPU Cores** — per-core utilization bars, plus per-core temperatures where the CPU exposes them (Intel coretemp); AMD k10temp shows package/CCD temps.
 3. **Memory & Disk** — RAM usage, every ZRAM device, block device tree.
 4. **GPUs** — every card under `/sys/class/drm`, found by driver symlink
@@ -34,6 +36,19 @@ Everything is auto-detected at runtime — no hardware assumptions baked in.
   otherwise it is reported as pacman-managed.
 - **Robust terminal handling:** raw mode and the alternate screen are restored
   via an RAII guard and a panic hook, so a crash can't wedge the shell.
+
+## CPU package power (RAPL)
+
+The kernel restricts `/sys/class/powercap/.../energy_uj` to root (PLATYPUS
+side-channel mitigation). To let sysinfo read it — the same mechanism distro
+btop packages use — grant the binary a file capability:
+
+```
+sudo setcap cap_dac_read_search=ep /path/to/sysinfo
+```
+
+Note: the capability sticks to the file, so it must be re-applied after each
+rebuild. Without it, tab 1 shows how to enable the reading instead of a value.
 
 ## Keys
 `1-6` / `h` `l` — switch tabs · `r` — refresh update counts · `q` / `Esc` / `Ctrl-C` — quit
